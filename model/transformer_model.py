@@ -1,3 +1,5 @@
+import sys
+sys.path.append('D:/study/brec_ijcnn2022')
 import copy
 import os
 import torch
