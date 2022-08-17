@@ -59,8 +59,75 @@ def clean_data(df):
         df[col] = scaler.fit_transform(df[[col]])
     return df
 
-
 def preprocess(input_file, y_date, seq_len=16, batch_size=32, exclude_date=None, d_model=35):
+    """
+    Preprocess data and split it in train and test data
+    :param d_model:
+    :param input_file: string, path to raw dataset, csv file
+    :param y_date: string, timestamp use for testing
+    :param exclude_date: list[string] timestamps to ignore
+    :return: train_x, train_y (both are np.array)
+    """
+    months_one_hot = [0 for _ in range(12)]
+    segmentation_dict = {}
+    x_users, y_users = {}, {}
+    df = pd.read_csv(input_file)
+    df = clean_data(df)
+    users = []
+    for i, row in df.iterrows():
+        if row['fecha_dato'] in exclude_date:
+            pass
+        user = row['ncodpers'] # uid
+        date = row['fecha_dato'].split("-")
+        year = [int(date[0] == "2016")]  # 1=2016, 0=2015 (1)
+        month = copy.copy(months_one_hot)
+        month[int(date[1]) - 1] = 1  # months one-hot encoded (12)
+        items = list(row.values)[26:]  # items are one-hot encoded (22)
+        items = [int(item) if not math.isnan(item) and item != 'NA' else 0 for item in items]
+        # one-hot encode segmentation (4)
+        segmentation = row['segmento']
+        segmentation_array = [0, 0, 0, 0]
+        if segmentation not in segmentation_dict.keys():
+            segmentation_dict[segmentation] = len(segmentation_dict)
+        segmentation_array[segmentation_dict[segmentation]] = 1
+        # one-hot encode new-index (1)
+        #new_index = [1] if row['ind_nuevo'] == 1 else [0]
+        # seniority + age + income (3) - values features
+        seniority = float(row['antiguedad'])
+        age = float(row['age'])
+        income = float(row['renta'])
+        value_features = [seniority, age, income]
+        # put the data together
+        data = year + month + segmentation_array + value_features + items  # (42) values
+        if row['fecha_dato'] == y_date and user in x_users.keys():
+            y_value = 0
+            if sum(items) > 0:
+                y_value = 1
+            y_users[user] = y_value
+            users.append(user)
+        elif user in x_users.keys():
+            x_users[user] = np.vstack((x_users[user], np.array(data)))
+        else:
+            x_users[user] = np.array(data)
+
+    assert len(x_users) == len(y_users)
+    x_data = []
+    y_data = []
+    for user in users:
+        if np.array(x_users[user]).shape[0] == seq_len:
+            x_data.append(x_users[user].reshape((seq_len, d_model)))
+        else:
+            continue
+        y_data.append(y_users[user])
+    x_data = np.stack(x_data)
+    y_data = np.stack(y_data)
+    num_users = x_data.shape[0]
+    x_data = x_data[:num_users - num_users % batch_size]
+    y_data = y_data[:num_users - num_users % batch_size]
+
+    return x_data, y_data
+
+def preprocess_old(input_file, y_date, seq_len=16, batch_size=32, exclude_date=None, d_model=35):
     """
     Preprocess data and split it in train and test data
     :param d_model:
@@ -153,7 +220,7 @@ def train_one_epoch(model, optimizer, criterion, dataset,
     return tot_loss
 
 
-def evaluate_one_epoch(model, criterion, dataset, device="cpu", owned_items=None):
+def evaluate_one_epoch_old(model, criterion, dataset, device="cpu", owned_items=None):
     batch_size = 1
     generator = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size
@@ -195,6 +262,29 @@ def evaluate_one_epoch(model, criterion, dataset, device="cpu", owned_items=None
         ndcg20 /= n_users
         metrics_dict = {"prec1": tot_prec1, "prec3": tot_prec3, "prec5": tot_prec5,
                         "prec10": tot_prec10, "mrr20": mrr20, "ndcg20": ndcg20}
+    return tot_loss, metrics_dict
+
+def evaluate_one_epoch(model, criterion, dataset, device="cpu", owned_items=None):
+    batch_size = 1
+    generator = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size
+    )
+    model.eval()
+    tot_loss = 0.0
+    tot_prec1 = 0.0
+    n_users = 0
+    j = 0
+    with torch.no_grad():
+        for batch, labels in tqdm(generator):
+            batch, labels = batch.to(device), labels.to(device)
+            logits = model(batch)
+            loss = criterion(logits, labels)
+            tot_loss += loss.item()
+            recommendations = logits_to_recs(logits.detach().cpu().numpy())
+            tot_prec1 += precision_k(1, labels, recommendations)
+        tot_loss /= len(dataset) // batch_size
+        tot_prec1 /= n_users
+        metrics_dict = {"prec1": tot_prec1}
     return tot_loss, metrics_dict
 
 
