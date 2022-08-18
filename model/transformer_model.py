@@ -100,9 +100,9 @@ def preprocess(input_file, y_date, seq_len=16, batch_size=32, exclude_date=None,
         # put the data together
         data = year + month + segmentation_array + value_features + items  # (42) values
         if row['fecha_dato'] == y_date and user in x_users.keys():
-            y_value = 0
+            y_value = [0]
             if sum(items) > 0:
-                y_value = 1
+                y_value = [1]
             y_users[user] = y_value
             users.append(user)
         elif user in x_users.keys():
@@ -282,11 +282,11 @@ def evaluate_one_epoch(model, criterion, dataset, device="cpu", owned_items=None
             tot_loss += loss.item()
             recommendations = logits_to_recs(logits.detach().cpu().numpy())
             tot_prec1 += precision_k(1, labels, recommendations)
+            n_users += 1 # not sure
         tot_loss /= len(dataset) // batch_size
         tot_prec1 /= n_users
         metrics_dict = {"prec1": tot_prec1}
     return tot_loss, metrics_dict
-
 
 def train_pipeline(args):
 
