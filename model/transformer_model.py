@@ -14,6 +14,7 @@ import argparse
 import pandas as pd
 import math
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import precision_score,recall_score,accuracy_score
 import numpy as np
 
 
@@ -199,7 +200,7 @@ def logits_to_recs(logits):
     return recs
 
 
-def train_one_epoch(model, optimizer, criterion, dataset,
+def train_one_epoch_old(model, optimizer, criterion, dataset,
                     lr_scheduler, warmup_scheduler, epoch, batch_size=32, device="cpu"):
     generator = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=True
@@ -217,6 +218,54 @@ def train_one_epoch(model, optimizer, criterion, dataset,
         optimizer.step()
         tot_loss += loss.item()
     tot_loss /= len(dataset) // batch_size
+    return tot_loss
+
+def probs_to_label(logits, threshold = 0.5):
+    res = list()
+    for prob in logits.detach().cpu().numpy():
+        # sigmoid
+        prob = 1/(1 + np.exp(-prob))
+        if prob < 0 or prob > 1:
+            print("Warning logits out of range: " + str(prob))
+        if prob > threshold:
+            res.append(1)
+        else:
+            res.append(0)
+    return res
+
+def train_one_epoch(model, optimizer, criterion, dataset,
+                    lr_scheduler, warmup_scheduler, epoch, batch_size=32, device="cpu"):
+    generator = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True
+    )
+    model.train()
+    tot_loss = 0.0
+    y_true = list()
+    y_pred = list()
+    for batch, labels in tqdm(generator):
+        batch, labels = batch.to(device), labels.to(device)
+        logits = model(batch)
+        for value_array in labels.tolist():
+            y_true.append(value_array[0])
+        # need to fix
+        recommendations = logits_to_recs(logits.detach().cpu().numpy())
+        # recommendations length == batch_size
+        y_pred.extend(probs_to_label(logits))
+        #print('need to fix y_pred ' + str(y_pred[:5]))
+        #print(len(y_true), len(y_pred))
+        lr_scheduler.step(epoch)
+        warmup_scheduler.dampen()
+        optimizer.zero_grad()
+        # need to check
+        loss = criterion(logits, labels)
+        loss.backward()
+        optimizer.step()
+        tot_loss += loss.item()
+    tot_loss /= len(dataset) // batch_size
+    # multiclass?
+    print('precision_score is ' + str(precision_score(y_true,y_pred, average='micro')))
+    print('recall_score is ' + str(recall_score(y_true,y_pred, average='micro')))
+    print('accuracy_score is ' + str(accuracy_score(y_true,y_pred)))
     return tot_loss
 
 
@@ -274,18 +323,29 @@ def evaluate_one_epoch(model, criterion, dataset, device="cpu", owned_items=None
     tot_prec1 = 0.0
     n_users = 0
     j = 0
+    y_true = list()
+    y_pred = list()
     with torch.no_grad():
         for batch, labels in tqdm(generator):
             batch, labels = batch.to(device), labels.to(device)
+            for value_array in labels.tolist():
+                y_true.append(value_array[0])
             logits = model(batch)
+            y_pred.extend(probs_to_label(logits))
             loss = criterion(logits, labels)
             tot_loss += loss.item()
-            recommendations = logits_to_recs(logits.detach().cpu().numpy())
-            tot_prec1 += precision_k(1, labels, recommendations)
-            n_users += 1 # not sure
+            #recommendations = logits_to_recs(logits.detach().cpu().numpy())
+            #tot_prec1 += precision_k(1, labels, recommendations)
+            #n_users += 1 # not sure
         tot_loss /= len(dataset) // batch_size
-        tot_prec1 /= n_users
-        metrics_dict = {"prec1": tot_prec1}
+        #tot_prec1 /= n_users
+        prec_score = precision_score(y_true,y_pred)
+        rec_score = recall_score(y_true,y_pred)
+        acc_score = accuracy_score(y_true,y_pred)
+        metrics_dict = {"prec": prec_score, "recall": rec_score, "accuracy": acc_score}
+    print('precision_score is ' + str(prec_score))
+    print('recall_score is ' + str(rec_score))
+    print('accuracy_score is ' + str(acc_score))
     return tot_loss, metrics_dict
 
 def train_pipeline(args):
@@ -387,7 +447,7 @@ def train_pipeline(args):
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default="data/train_reduced.csv")
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32) # origin 64
     parser.add_argument('--seq_len', type=int, default=16)
     parser.add_argument('--n_items', type=int, default=22,
                         help='number of different items that can be recommended')
